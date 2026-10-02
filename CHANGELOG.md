@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.6+as3b.2
+
+### Fixed
+
+- A lost connection (e.g. "No PONG received" after the appliance was switched off) no longer logs
+  "Task exception was never retrieved" with a traceback. Without its own reconnect, the receive loop of
+  homeconnect-websocket raises the connection error in a background task nobody awaits. The coordinator
+  now handles it and logs it at debug level; the lost connection is reported by the existing warning.
+
 ## 1.0.6+as3b.1
 
 Fork of [chris-mc1/homeconnect_local_hass](https://github.com/chris-mc1/homeconnect_local_hass) 1.0.6
