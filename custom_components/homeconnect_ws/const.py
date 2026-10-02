@@ -30,7 +30,7 @@ CONF_DEV_OVERRIDE_PSK: Final = "override_psk"
 
 MAX_RECONECT_TIME: Final = 300
 
-# Backoff for the connect/reconnect loop in HomeConnectCoordinator (based on PR #490).
+# Backoff for the connect/reconnect loop in HomeConnectCoordinator (based on upstream PR #490).
 # Without a delay the loop retries as fast as the network stack fails, pegging a CPU core.
 # Delays: 5 s, 10 s, 20 s, ... capped at 300 s, each reduced by up to RECONNECT_JITTER.
 INITIAL_RECONNECT_DELAY: Final = 5
@@ -43,3 +43,5 @@ CONNECT_TIMEOUT: Final = 60
 # Must stay below homeconnect_websocket's TaskManager BLOCK_TIMEOUT (20 s): once that timeout
 # is hit, TaskManager.shutdown() cancels tasks in a loop without awaiting and blocks the event loop.
 CLOSE_TIMEOUT: Final = 15
+# Timeout for the reachability check of a host announced via zeroconf.
+DISCOVERY_PROBE_TIMEOUT: Final = 3

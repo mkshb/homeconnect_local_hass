@@ -45,6 +45,20 @@ To use this integration, you must first create a Home Connect account and connec
 - When an established connection is lost, the integration reconnects with the same backoff.
   Entities stay available for up to 5 minutes while reconnecting.
 
+## Host updates via discovery (zeroconf)
+
+Appliances announce themselves via mDNS (`_homeconnect._tcp.local.`). For an already configured
+Appliance, a discovered address replaces the configured host only if:
+
+- the host wasn't entered manually (manually entered hosts are never changed),
+- the configured host isn't among the announced addresses,
+- the address is usable (not loopback, link-local, unspecified, multicast or reserved) and
+- the Appliance accepts a TCP connection on that address (port 443 for TLS, 80 for AES Appliances).
+
+Otherwise the configured host is kept and a warning is logged. This prevents stale mDNS records,
+mDNS reflectors/repeaters between VLANs or other unroutable announcements from replacing a working
+host. Every host change is logged at info level.
+
 ## Remove integration
 
 This integration follows standard integration removal, no extra steps are required.

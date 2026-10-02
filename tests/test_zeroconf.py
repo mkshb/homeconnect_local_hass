@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from ipaddress import ip_address
 from typing import TYPE_CHECKING
-from unittest.mock import ANY, Mock
+from unittest.mock import ANY, AsyncMock, Mock
 from uuid import uuid4
 
+import pytest
 from custom_components.homeconnect_ws import config_flow
+from custom_components.homeconnect_ws.config_flow import _async_host_reachable
 from custom_components.homeconnect_ws.const import (
     CONF_AES_IV,
     CONF_APPLIANCE_INFO,
@@ -29,14 +32,13 @@ from .const import MOCK_CONFIG_DATA_1 as MOCK_CONFIG_DATA
 from .const import MOCK_TLS_DEVICE_ID, MOCK_TLS_DEVICE_INFO
 
 if TYPE_CHECKING:
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
-    import pytest
     from homeassistant.core import HomeAssistant
 
 MOCK_ZEROCONF_DATA = ZeroconfServiceInfo(
-    ip_address=ip_address("127.0.0.2"),
-    ip_addresses=[ip_address("127.0.0.2")],
+    ip_address=ip_address("192.0.2.2"),
+    ip_addresses=[ip_address("192.0.2.2")],
     hostname=f"test_brand-test_tls-{MOCK_TLS_DEVICE_ID}.local.",
     name="Test_TLS Test_Brand Test_vib._homeconnect._tcp.local.",
     port=443,
@@ -55,6 +57,14 @@ MOCK_ZEROCONF_DATA = ZeroconfServiceInfo(
 )
 
 UPLOADED_FILE = str(uuid4())
+
+
+@pytest.fixture(autouse=True)
+def mock_host_reachable(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Don't probe discovered hosts."""
+    probe = AsyncMock(return_value=True)
+    monkeypatch.setattr(config_flow, "_async_host_reachable", probe)
+    return probe
 
 
 async def test_zeroconf_init(
@@ -87,7 +97,7 @@ async def test_zeroconf_init(
         },
     )
     assert appliance.description == mock_parse_device_description.return_value
-    assert appliance.host == "127.0.0.2"
+    assert appliance.host == "192.0.2.2"
     assert appliance.app_name == "Homeassistant"
     assert appliance.app_id == "01020304"
     assert appliance.psk64 == MOCK_TLS_DEVICE_INFO["key"]
@@ -106,7 +116,7 @@ async def test_zeroconf_init(
     assert result["title"] == "Test_Brand Test_TLS"
     assert result["data"][CONF_DESCRIPTION_FILENAME] == "01020304/DeviceDescription.xml"
     assert result["data"][CONF_FEATURE_FILENAME] == "01020304/FeatureMapping.xml"
-    assert result["data"][CONF_HOST] == "127.0.0.2"
+    assert result["data"][CONF_HOST] == "192.0.2.2"
     assert result["data"][CONF_PSK] == MOCK_TLS_DEVICE_INFO["key"]
     assert CONF_AES_IV not in result["data"]
     assert result["data"][CONF_NAME] == "Test_Brand Test_TLS"
@@ -151,8 +161,11 @@ async def test_zeroconf_duplicate_entry(
 async def test_zeroconf_update_host(
     hass: HomeAssistant,
     mock_setup_entry: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test updating host from zeroconf discovery."""
+    probe = AsyncMock(return_value=True)
+    monkeypatch.setattr(config_flow, "_async_host_reachable", probe)
     mock_config = MockConfigEntry(
         domain=DOMAIN,
         data=MOCK_CONFIG_DATA,
@@ -166,7 +179,8 @@ async def test_zeroconf_update_host(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "already_configured"
-    assert mock_config.data[CONF_HOST] == "127.0.0.2"
+    assert mock_config.data[CONF_HOST] == "192.0.2.2"
+    probe.assert_awaited_once_with("192.0.2.2", 80)
     mock_setup_entry.assert_not_awaited()
 
 
@@ -209,8 +223,8 @@ async def test_zeroconf_invalid_discovery_info(
         DOMAIN,
         context={"source": SOURCE_ZEROCONF},
         data=ZeroconfServiceInfo(
-            ip_address=ip_address("127.0.0.2"),
-            ip_addresses=[ip_address("127.0.0.2")],
+            ip_address=ip_address("192.0.2.2"),
+            ip_addresses=[ip_address("192.0.2.2")],
             hostname=f"test_brand-test_tls-{MOCK_TLS_DEVICE_ID}.local.",
             name="Test_TLS Test_Brand Test_vib._homeconnect._tcp.local.",
             port=443,
@@ -222,3 +236,69 @@ async def test_zeroconf_invalid_discovery_info(
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "invalid_discovery_info"
     mock_setup_entry.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("addresses", "probe_result"),
+    [
+        # Announced address not reachable (e.g. stale or reflected record)
+        (["198.51.100.169"], False),
+        # Unusable addresses are ignored without probing
+        (["127.0.0.2", "169.254.10.20", "fe80::1", "0.0.0.0"], True),  # noqa: S104
+        # Current host still announced
+        (["1.2.3.4", "192.0.2.2"], True),
+    ],
+)
+async def test_zeroconf_keep_host(
+    hass: HomeAssistant,
+    mock_setup_entry: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    addresses: list[str],
+    probe_result: bool,  # noqa: FBT001
+) -> None:
+    """Test discovery doesn't replace the host with an unusable or unreachable address."""
+    probe = AsyncMock(return_value=probe_result)
+    monkeypatch.setattr(config_flow, "_async_host_reachable", probe)
+    mock_config = MockConfigEntry(
+        domain=DOMAIN,
+        data=MOCK_CONFIG_DATA,
+        unique_id=MOCK_TLS_DEVICE_ID,
+    )
+    mock_config.add_to_hass(hass)
+    assert mock_config.data[CONF_HOST] == "1.2.3.4"
+
+    ips = [ip_address(address) for address in addresses]
+    discovery_info = ZeroconfServiceInfo(
+        ip_address=ips[0],
+        ip_addresses=ips,
+        hostname=MOCK_ZEROCONF_DATA.hostname,
+        name=MOCK_ZEROCONF_DATA.name,
+        port=443,
+        properties=MOCK_ZEROCONF_DATA.properties,
+        type=MOCK_ZEROCONF_DATA.type,
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": SOURCE_ZEROCONF}, data=discovery_info
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    assert mock_config.data[CONF_HOST] == "1.2.3.4"
+    if probe_result:
+        probe.assert_not_awaited()
+    else:
+        probe.assert_awaited_once_with("198.51.100.169", 80)
+        assert "Ignoring discovered address(es) 198.51.100.169" in caplog.text
+    mock_setup_entry.assert_not_awaited()
+
+
+async def test_host_reachable(socket_enabled: None) -> None:
+    """Test the TCP reachability probe."""
+    probe = _async_host_reachable  # not patched by mock_host_reachable
+    server = await asyncio.start_server(lambda _r, w: w.close(), "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    assert await probe("127.0.0.1", port)
+    server.close()
+    await server.wait_closed()
+    assert not await probe("127.0.0.1", port)

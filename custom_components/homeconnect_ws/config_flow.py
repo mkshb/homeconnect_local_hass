@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import random
 import re
 from asyncio import Event, wait_for
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 from zipfile import ZipFile
@@ -48,10 +50,13 @@ from .const import (
     CONF_FILE,
     CONF_MANUAL_HOST,
     CONF_PSK,
+    DISCOVERY_PROBE_TIMEOUT,
     DOMAIN,
 )
 
 if TYPE_CHECKING:
+    from ipaddress import IPv4Address, IPv6Address
+
     from homeassistant.config_entries import ConfigFlowResult
     from homeassistant.core import HomeAssistant
     from homeassistant.data_entry_flow import FlowResult
@@ -60,6 +65,31 @@ if TYPE_CHECKING:
     from . import HCConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _is_usable_address(address: IPv4Address | IPv6Address) -> bool:
+    """Return False for addresses an appliance can't be reached at."""
+    return not (
+        address.is_loopback
+        or address.is_link_local
+        or address.is_unspecified
+        or address.is_multicast
+        or address.is_reserved
+    )
+
+
+async def _async_host_reachable(host: str, port: int) -> bool:
+    """Check if a TCP connection to host:port can be established."""
+    try:
+        async with asyncio.timeout(DISCOVERY_PROBE_TIMEOUT):
+            _, writer = await asyncio.open_connection(host, port)
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with suppress(OSError):
+        await writer.wait_closed()
+    return True
+
 
 CONFIG_FILE_SCHEMA = vol.Schema(
     {
@@ -381,7 +411,9 @@ class HomeConnectConfigFlow(ConfigFlow, domain=DOMAIN):
                 self.handler, self.unique_id
             )
             if config_entry and not config_entry.data.get(CONF_MANUAL_HOST, False):
-                updates = {CONF_HOST: str(discovery_info.ip_address)}
+                host = await self._async_discovered_host(config_entry, discovery_info)
+                if host is not None:
+                    updates = {CONF_HOST: host}
             self._abort_if_unique_id_configured(updates=updates)
             self.data[CONF_HOST] = str(discovery_info.ip_address)
             self.data[CONF_NAME] = (
@@ -397,3 +429,46 @@ class HomeConnectConfigFlow(ConfigFlow, domain=DOMAIN):
             return await self.async_step_upload()
         except KeyError:
             return self.async_abort(reason="invalid_discovery_info")
+
+    async def _async_discovered_host(
+        self, config_entry: HCConfigEntry, discovery_info: ZeroconfServiceInfo
+    ) -> str | None:
+        """
+        Return the discovered host to store in the config entry, None to keep the current one.
+
+        A discovered address is only taken over if it is usable and accepts a TCP connection
+        on the appliance's port. Stale, unroutable or reflected mDNS records are ignored.
+        """
+        current_host = config_entry.data[CONF_HOST]
+        candidates = [
+            str(address) for address in discovery_info.ip_addresses if _is_usable_address(address)
+        ]
+        if current_host in candidates:
+            return None
+        if not candidates:
+            _LOGGER.debug(
+                "Ignoring discovered addresses %s for %s, none usable",
+                [str(address) for address in discovery_info.ip_addresses],
+                config_entry.title,
+            )
+            return None
+
+        port = 80 if config_entry.data.get(CONF_AES_IV) else 443
+        for candidate in candidates:
+            if await _async_host_reachable(candidate, port):
+                _LOGGER.info(
+                    "Host of %s changed from %s to %s (zeroconf discovery)",
+                    config_entry.title,
+                    current_host,
+                    candidate,
+                )
+                return candidate
+
+        _LOGGER.warning(
+            "Ignoring discovered address(es) %s for %s, not reachable on port %s; keeping %s",
+            ", ".join(candidates),
+            config_entry.title,
+            port,
+            current_host,
+        )
+        return None
