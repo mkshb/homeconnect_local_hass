@@ -3639,9 +3639,9 @@
           "name": "Delay",
           "description": "Set the start delay"
         },
-        "allow_pause": {
-          "name": "Allow pausing",
-          "description": "If the Appliance refuses all other ways, pause the Program, change the value and resume it. Only used if the Appliance allows pausing at the moment"
+        "pause_resume": {
+          "name": "Pause and resume",
+          "description": "While the Program waits for its delayed start, pause it, change the value and resume it. Turn off for Appliances that accept the change without pausing"
         }
       }
     },
@@ -3657,31 +3657,9 @@
           "name": "Finish in",
           "description": "Set the time the Program should be finished in"
         },
-        "allow_pause": {
-          "name": "Allow pausing",
-          "description": "If the Appliance refuses all other ways, pause the Program, change the value and resume it. Only used if the Appliance allows pausing at the moment"
-        }
-      }
-    },
-    "send_raw": {
-      "name": "Send raw message",
-      "description": "Diagnostics: send a message to the Appliance and return its response, including error codes",
-      "fields": {
-        "device_id": {
-          "name": "Appliance",
-          "description": "The Appliance to send the message to"
-        },
-        "resource": {
-          "name": "Resource",
-          "description": "Resource of the message, e.g. /ro/activeProgram"
-        },
-        "action": {
-          "name": "Action",
-          "description": "Action of the message"
-        },
-        "data": {
-          "name": "Data",
-          "description": "Data of the message, sent unchanged (an object is wrapped in a list)"
+        "pause_resume": {
+          "name": "Pause and resume",
+          "description": "While the Program waits for its delayed start, pause it, change the value and resume it. Turn off for Appliances that accept the change without pausing"
         }
       }
     },
@@ -3709,6 +3687,12 @@
     },
     "start_program_error": {
       "message": "Error {code} ({message}) starting program {name}, resource {resource}"
+    },
+    "pause_not_available": {
+      "message": "Can't change {name} during the delayed start: the Appliance doesn't allow pausing the Program at the moment"
+    },
+    "delayed_start_change_error": {
+      "message": "Changing {name} during the delayed start failed at step '{step}': {reason}. The Appliance is now in state {state}, {name} is {value} s"
     },
     "entity_not_found": {
       "message": "Appliance has no entity {key}"

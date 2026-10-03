@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import asyncio
+from typing import TYPE_CHECKING, Any
 
 import pytest
+from custom_components.homeconnect_ws import program_options
 from custom_components.homeconnect_ws.const import DOMAIN
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
@@ -22,8 +24,7 @@ if TYPE_CHECKING:
 FINISH_IN_UID = 410
 PAUSE_UID = 310
 RESUME_UID = 311
-NO_ACCESS = CodeResponsError(519, "/ro/values")
-OK = Message(action=Action.RESPONSE)
+OPERATION_STATE_UID = 320
 
 
 def add_finish_in(appliance: MockAppliance, access: Access, *, available: bool) -> Option:
@@ -155,190 +156,232 @@ def add_entity(appliance: MockAppliance, entity: Command | Status) -> None:
         appliance.commands[entity.name] = entity
 
 
-def finish_in_message(resource: str, program: int | None = None) -> Message:
-    """Build the expected message writing finish_in = 3600 s."""
-    if program is None:
-        data = {"uid": FINISH_IN_UID, "value": 3600}
-    else:
-        data = {"program": program, "options": [{"uid": FINISH_IN_UID, "value": 3600}]}
-    return Message(resource=resource, action=Action.POST, data=data)
+class FakeWasher:
+    """Answer messages like a washer waiting for its delayed start."""
+
+    def __init__(self, appliance: MockAppliance, *, ignore_resume: int = 0) -> None:
+        """Add the entities needed for pause and resume."""
+        self.appliance = appliance
+        self.ignore_resume = ignore_resume
+        self.finish_in = add_finish_in(appliance, Access.READ, available=True)
+        for uid, name in ((PAUSE_UID, "PauseProgram"), (RESUME_UID, "ResumeProgram")):
+            add_entity(
+                appliance,
+                Command(
+                    EntityDescription(
+                        uid=uid,
+                        name=f"BSH.Common.Command.{name}",
+                        access=Access.WRITE_ONLY,
+                        available=True,
+                    ),
+                    appliance,
+                ),
+            )
+        self.state = Status(
+            EntityDescription(
+                uid=OPERATION_STATE_UID,
+                name="BSH.Common.Status.OperationState",
+                enumeration={"0": "Ready", "1": "DelayedStart", "2": "Pause", "3": "Run"},
+                initValue=1,
+            ),
+            appliance,
+        )
+        add_entity(appliance, self.state)
+        self.messages: list[tuple[int, Any]] = []
+        appliance.session.send_sync.side_effect = self.send_sync
+
+    async def send_sync(self, message: Message) -> Message:
+        """Handle a message."""
+        uid = message.data["uid"]
+        value = message.data["value"]
+        self.messages.append((uid, value))
+        if uid == PAUSE_UID:
+            await self.state.update({"value": 2})
+        elif uid == RESUME_UID:
+            if self.ignore_resume:
+                self.ignore_resume -= 1
+            else:
+                await self.state.update({"value": 1})
+        elif uid == FINISH_IN_UID:
+            if self.state.value == "DelayedStart":
+                raise CodeResponsError(519, "/ro/values")
+            if value < 1800:
+                raise CodeResponsError(531, "/ro/values")
+            await self.finish_in.update({"value": value})
+        return Message(resource="/ro/values", action=Action.RESPONSE)
 
 
-async def test_set_finish_in_active_program(
-    hass: HomeAssistant,
-    mock_appliance: MockAppliance,
-    patch_entity_description: None,
-) -> None:
-    """Test set_finish_in falls back to /ro/activeProgram when /ro/values is refused."""
-    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
-    add_finish_in(mock_appliance, Access.READ, available=True)
-    await mock_appliance.entities["Test.ActiveProgram"].update({"value": 500})
-    mock_appliance.session.send_sync.side_effect = [NO_ACCESS, OK]
-
-    await hass.services.async_call(
+async def set_finish_in(hass: HomeAssistant, hours: int, **kwargs: Any) -> dict:
+    """Call set_finish_in."""
+    return await hass.services.async_call(
         DOMAIN,
         "set_finish_in",
-        {"device_id": get_device_id(hass), "finish_in": {"hours": 1}},
+        {"device_id": get_device_id(hass), "finish_in": {"hours": hours}, **kwargs},
         blocking=True,
+        return_response=True,
     )
 
-    assert [call.args[0] for call in mock_appliance.session.send_sync.await_args_list] == [
-        finish_in_message("/ro/values"),
-        finish_in_message("/ro/activeProgram", 500),
-    ]
+
+@pytest.fixture
+def short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Shorten the timeouts of pause and resume."""
+    monkeypatch.setattr(program_options, "STEP_TIMEOUT", 0.2)
+    monkeypatch.setattr(program_options, "RESUME_AVAILABLE_TIMEOUT", 0.2)
 
 
-async def test_set_finish_in_all_refused(
+async def test_set_finish_in_delayed_start(
     hass: HomeAssistant,
     mock_appliance: MockAppliance,
     patch_entity_description: None,
 ) -> None:
-    """Test set_finish_in tries all variants and reports the last error."""
+    """Test set_finish_in pauses, writes and resumes during a delayed start."""
     assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
-    add_finish_in(mock_appliance, Access.READ, available=True)
-    await mock_appliance.entities["Test.Option1"].update({"value": 1})
-    await mock_appliance.entities["Test.ActiveProgram"].update({"value": 500})
-    await mock_appliance.entities["Test.SelectedProgram"].update({"value": 500})
-    mock_appliance.session.send_sync.side_effect = [
-        NO_ACCESS,
-        NO_ACCESS,
-        NO_ACCESS,
-        CodeResponsError(541, "/ro/selectedProgram"),
-    ]
+    washer = FakeWasher(mock_appliance)
+
+    response = await set_finish_in(hass, 2)
+
+    assert response == {"finish_in": 7200, "operation_state": "delayedstart", "paused": True}
+    assert washer.messages == [(PAUSE_UID, True), (FINISH_IN_UID, 7200), (RESUME_UID, True)]
+    assert washer.finish_in.value == 7200
+
+
+async def test_set_finish_in_delayed_start_refused(
+    hass: HomeAssistant,
+    mock_appliance: MockAppliance,
+    patch_entity_description: None,
+) -> None:
+    """Test the program is resumed if the appliance refuses the value."""
+    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
+    washer = FakeWasher(mock_appliance)
+    await washer.finish_in.update({"value": 7200})
 
     with pytest.raises(HomeAssistantError) as exc_info:
         await hass.services.async_call(
             DOMAIN,
             "set_finish_in",
-            {"device_id": get_device_id(hass), "finish_in": {"hours": 1}},
+            {"device_id": get_device_id(hass), "finish_in": {"minutes": 10}},
             blocking=True,
         )
-    assert exc_info.value.translation_placeholders["code"] == "541"
-    assert [call.args[0] for call in mock_appliance.session.send_sync.await_args_list] == [
-        finish_in_message("/ro/values"),
-        finish_in_message("/ro/activeProgram", 500),
-        Message(
-            resource="/ro/activeProgram",
-            action=Action.POST,
-            data={
-                "program": 500,
-                "options": [{"uid": 401, "value": 1}, {"uid": FINISH_IN_UID, "value": 3600}],
-            },
-        ),
-        finish_in_message("/ro/selectedProgram", 500),
+
+    assert exc_info.value.translation_key == "delayed_start_change_error"
+    placeholders = exc_info.value.translation_placeholders
+    assert placeholders["step"] == "write"
+    assert placeholders["state"] == "delayedstart"
+    assert placeholders["value"] == "7200"
+    assert "531" in placeholders["reason"]
+    assert washer.messages == [(PAUSE_UID, True), (FINISH_IN_UID, 600), (RESUME_UID, True)]
+
+
+async def test_set_finish_in_resume_again(
+    hass: HomeAssistant,
+    mock_appliance: MockAppliance,
+    patch_entity_description: None,
+    short_timeout: None,
+) -> None:
+    """Test resume is sent again if the appliance stays paused."""
+    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
+    washer = FakeWasher(mock_appliance, ignore_resume=1)
+
+    response = await set_finish_in(hass, 2)
+
+    assert response["paused"] is True
+    assert response["operation_state"] == "delayedstart"
+    assert washer.messages == [
+        (PAUSE_UID, True),
+        (FINISH_IN_UID, 7200),
+        (RESUME_UID, True),
+        (RESUME_UID, True),
     ]
 
 
-async def test_set_finish_in_pause(
+async def test_set_finish_in_stays_paused(
+    hass: HomeAssistant,
+    mock_appliance: MockAppliance,
+    patch_entity_description: None,
+    short_timeout: None,
+) -> None:
+    """Test the error names the state if the appliance doesn't resume."""
+    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
+    washer = FakeWasher(mock_appliance, ignore_resume=2)
+
+    with pytest.raises(HomeAssistantError) as exc_info:
+        await set_finish_in(hass, 2)
+
+    placeholders = exc_info.value.translation_placeholders
+    assert placeholders["step"] == "resume"
+    assert placeholders["state"] == "pause"
+    assert washer.messages[-2:] == [(RESUME_UID, True), (RESUME_UID, True)]
+
+
+async def test_set_finish_in_pause_not_available(
     hass: HomeAssistant,
     mock_appliance: MockAppliance,
     patch_entity_description: None,
 ) -> None:
-    """Test set_finish_in pauses, writes and resumes if allowed."""
+    """Test a clear error if pausing is not allowed."""
     assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
-    add_finish_in(mock_appliance, Access.READ, available=True)
-    for uid, name in ((PAUSE_UID, "PauseProgram"), (RESUME_UID, "ResumeProgram")):
-        add_entity(
-            mock_appliance,
-            Command(
-                EntityDescription(
-                    uid=uid,
-                    name=f"BSH.Common.Command.{name}",
-                    access=Access.WRITE_ONLY,
-                    available=True,
-                ),
-                mock_appliance,
-            ),
-        )
-    add_entity(
-        mock_appliance,
-        Status(
-            EntityDescription(
-                uid=320, name="BSH.Common.Status.OperationState", initValue="DelayedStart"
-            ),
-            mock_appliance,
-        ),
-    )
-    mock_appliance.session.send_sync.side_effect = [NO_ACCESS, OK, OK, OK]
+    washer = FakeWasher(mock_appliance)
+    await mock_appliance.commands["BSH.Common.Command.PauseProgram"].update({"available": False})
 
-    await hass.services.async_call(
-        DOMAIN,
-        "set_finish_in",
-        {"device_id": get_device_id(hass), "finish_in": {"hours": 1}, "allow_pause": True},
-        blocking=True,
-    )
+    with pytest.raises(HomeAssistantError) as exc_info:
+        await set_finish_in(hass, 2)
 
-    assert [call.args[0] for call in mock_appliance.session.send_sync.await_args_list] == [
-        finish_in_message("/ro/values"),
-        Message(resource="/ro/values", action=Action.POST, data={"uid": PAUSE_UID, "value": True}),
-        finish_in_message("/ro/values"),
-        Message(resource="/ro/values", action=Action.POST, data={"uid": RESUME_UID, "value": True}),
+    assert exc_info.value.translation_key == "pause_not_available"
+    assert washer.messages == []
+
+
+async def test_set_finish_in_without_pause_resume(
+    hass: HomeAssistant,
+    mock_appliance: MockAppliance,
+    patch_entity_description: None,
+) -> None:
+    """Test pause_resume false writes directly during a delayed start."""
+    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
+    washer = FakeWasher(mock_appliance)
+
+    with pytest.raises(HomeAssistantError) as exc_info:
+        await set_finish_in(hass, 2, pause_resume=False)
+
+    assert exc_info.value.translation_key == "set_option_error"
+    assert washer.messages == [(FINISH_IN_UID, 7200)]
+
+
+async def test_set_finish_in_not_delayed(
+    hass: HomeAssistant,
+    mock_appliance: MockAppliance,
+    patch_entity_description: None,
+) -> None:
+    """Test set_finish_in writes directly if the program doesn't wait for its start."""
+    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
+    washer = FakeWasher(mock_appliance)
+    await washer.state.update({"value": 0})
+
+    response = await set_finish_in(hass, 2)
+
+    assert response == {"finish_in": 7200, "operation_state": "ready", "paused": False}
+    assert washer.messages == [(FINISH_IN_UID, 7200)]
+
+
+async def test_set_finish_in_one_at_a_time(
+    hass: HomeAssistant,
+    mock_appliance: MockAppliance,
+    patch_entity_description: None,
+) -> None:
+    """Test two calls don't overlap and the second value wins."""
+    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
+    washer = FakeWasher(mock_appliance)
+
+    await asyncio.gather(set_finish_in(hass, 2), set_finish_in(hass, 3))
+
+    assert washer.messages == [
+        (PAUSE_UID, True),
+        (FINISH_IN_UID, 7200),
+        (RESUME_UID, True),
+        (PAUSE_UID, True),
+        (FINISH_IN_UID, 10800),
+        (RESUME_UID, True),
     ]
-
-
-async def test_set_finish_in_no_pause_by_default(
-    hass: HomeAssistant,
-    mock_appliance: MockAppliance,
-    patch_entity_description: None,
-) -> None:
-    """Test set_finish_in doesn't pause without allow_pause."""
-    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
-    add_finish_in(mock_appliance, Access.READ, available=True)
-    mock_appliance.session.send_sync.side_effect = NO_ACCESS
-
-    with pytest.raises(HomeAssistantError):
-        await hass.services.async_call(
-            DOMAIN,
-            "set_finish_in",
-            {"device_id": get_device_id(hass), "finish_in": {"hours": 1}},
-            blocking=True,
-        )
-    mock_appliance.session.send_sync.assert_awaited_once()
-
-
-async def test_send_raw(
-    hass: HomeAssistant,
-    mock_appliance: MockAppliance,
-    patch_entity_description: None,
-) -> None:
-    """Test send_raw returns the response or the error code."""
-    assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
-    data = [{"program": 500, "options": [{"uid": FINISH_IN_UID, "value": 3600}]}]
-    mock_appliance.session.send_sync.return_value = Message(
-        resource="/ro/activeProgram", action=Action.RESPONSE, data=[]
-    )
-
-    response = await hass.services.async_call(
-        DOMAIN,
-        "send_raw",
-        {"device_id": get_device_id(hass), "resource": "/ro/activeProgram", "data": data},
-        blocking=True,
-        return_response=True,
-    )
-    assert response == {
-        "code": None,
-        "message": None,
-        "resource": "/ro/activeProgram",
-        "data": [],
-    }
-    mock_appliance.session.send_sync.assert_awaited_once_with(
-        Message(resource="/ro/activeProgram", action=Action.POST, data=data)
-    )
-
-    mock_appliance.session.send_sync.side_effect = CodeResponsError(519, "/ro/activeProgram")
-    response = await hass.services.async_call(
-        DOMAIN,
-        "send_raw",
-        {"device_id": get_device_id(hass), "resource": "/ro/activeProgram", "action": "GET"},
-        blocking=True,
-        return_response=True,
-    )
-    assert response == {
-        "code": 519,
-        "message": "WriteRequest NoAccess",
-        "resource": "/ro/activeProgram",
-        "data": None,
-    }
+    assert washer.finish_in.value == 10800
 
 
 async def test_describe_option(

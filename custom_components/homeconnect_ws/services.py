@@ -9,13 +9,10 @@ import voluptuous as vol
 from homeassistant.core import SupportsResponse
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
-from homeassistant.helpers.service import async_register_admin_service
 from homeconnect_websocket import CodeResponsError
-from homeconnect_websocket.message import Action, Message
 
 from .const import DOMAIN
 from .helpers import error_decorator, get_config_entry_from_call, start_program
-from .program_options import set_program_option
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse
@@ -27,14 +24,8 @@ _LOGGER = logging.getLogger(__name__)
 START_IN = "BSH.Common.Option.StartInRelative"
 FINISH_IN = "BSH.Common.Option.FinishInRelative"
 
-SEND_RAW_SCHEMA = vol.Schema(
-    {
-        vol.Required("resource"): cv.string,
-        vol.Optional("action", default=Action.POST.value): vol.In(
-            [Action.GET.value, Action.POST.value, Action.NOTIFY.value]
-        ),
-        vol.Optional("data"): vol.Any(list, dict),
-    },
+SET_OPTION_SCHEMA = vol.Schema(
+    {vol.Optional("pause_resume", default=True): cv.boolean},
     extra=vol.ALLOW_EXTRA,
 )
 
@@ -109,54 +100,30 @@ async def handle_start_program(call: ServiceCall) -> ServiceResponse:
         )
 
 
-async def _set_option(call: ServiceCall, key: str, field: str, error_key: str) -> None:
-    appliance = await _get_appliance(call)
+async def _set_option(call: ServiceCall, key: str, field: str, error_key: str) -> ServiceResponse:
+    config_entry = await get_config_entry_from_call(call.hass, call)
+    appliance = config_entry.runtime_data.appliance
     entity = _get_entity_or_raise(appliance, key, error_key)
+    value = _duration_to_seconds(entity, call.data[field])
     try:
-        await set_program_option(
-            appliance,
-            entity,
-            _duration_to_seconds(entity, call.data[field]),
-            allow_pause=call.data.get("allow_pause", False),
+        result = await config_entry.runtime_data.option_writer.set_option(
+            entity, value, pause_resume=call.data["pause_resume"]
         )
     except CodeResponsError as exc:
         _raise_code_error(exc, "set_option_error", entity.name)
+    return {field: value, **result}
 
 
 @error_decorator
 async def handle_set_start_in(call: ServiceCall) -> ServiceResponse:
-    """Change the start delay."""
-    await _set_option(call, START_IN, "start_in", "start_in_not_available")
+    """Change the start delay, pause and resume during a delayed start."""
+    return await _set_option(call, START_IN, "start_in", "start_in_not_available")
 
 
 @error_decorator
 async def handle_set_finish_in(call: ServiceCall) -> ServiceResponse:
-    """Change the finish time."""
-    await _set_option(call, FINISH_IN, "finish_in", "finish_in_not_available")
-
-
-@error_decorator
-async def handle_send_raw(call: ServiceCall) -> ServiceResponse:
-    """Send a message to the appliance and return its response, for diagnostics."""
-    appliance = await _get_appliance(call)
-    message = Message(
-        resource=call.data["resource"],
-        action=Action(call.data["action"]),
-        data=call.data.get("data"),
-    )
-    _LOGGER.info("Sending %s %s: %s", message.action, message.resource, message.data)
-    try:
-        response = await appliance.session.send_sync(message)
-    except CodeResponsError as exc:
-        return {"code": exc.code, "message": exc.message, "resource": exc.resource, "data": None}
-    if response is None:
-        return {"code": None, "message": None, "resource": message.resource, "data": None}
-    return {
-        "code": response.code,
-        "message": None,
-        "resource": response.resource,
-        "data": response.data,
-    }
+    """Change the finish time, pause and resume during a delayed start."""
+    return await _set_option(call, FINISH_IN, "finish_in", "finish_in_not_available")
 
 
 @error_decorator
@@ -188,16 +155,19 @@ async def handle_describe_option(call: ServiceCall) -> ServiceResponse:
 def async_setup_services(hass: HomeAssistant) -> None:
     """Register the services."""
     hass.services.async_register(DOMAIN, "start_program", handle_start_program)
-    hass.services.async_register(DOMAIN, "set_start_in", handle_set_start_in)
-    hass.services.async_register(DOMAIN, "set_finish_in", handle_set_finish_in)
-    # Sends anything to the appliance, admins only
-    async_register_admin_service(
-        hass,
+    hass.services.async_register(
         DOMAIN,
-        "send_raw",
-        handle_send_raw,
-        SEND_RAW_SCHEMA,
-        supports_response=SupportsResponse.ONLY,
+        "set_start_in",
+        handle_set_start_in,
+        SET_OPTION_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "set_finish_in",
+        handle_set_finish_in,
+        SET_OPTION_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
     hass.services.async_register(
         DOMAIN,

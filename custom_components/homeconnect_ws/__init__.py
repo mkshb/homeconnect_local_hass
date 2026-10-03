@@ -35,6 +35,7 @@ from .const import (
 )
 from .coordinator import HomeConnectCoordinator
 from .entity_descriptions import get_available_entities
+from .program_options import OptionWriter
 from .services import async_setup_services
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ class HCData:
     device_info: DeviceInfo
     available_entity_descriptions: _EntityDescriptionsType
     coordinator: HomeConnectCoordinator
+    option_writer: OptionWriter
 
 
 @dataclass
@@ -142,6 +144,7 @@ async def async_setup_entry(
         device_info=device_info,
         available_entity_descriptions=available_entities,
         coordinator=coordinator,
+        option_writer=OptionWriter(appliance, config_entry.title),
     )
 
     await coordinator.async_config_entry_first_refresh()
