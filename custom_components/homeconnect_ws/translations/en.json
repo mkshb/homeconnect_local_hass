@@ -3694,6 +3694,18 @@
     "delayed_start_change_error": {
       "message": "Changing {name} during the delayed start failed at step '{step}': {reason}. The Appliance is now in state {state}, {name} is {value} s"
     },
+    "option_out_of_range": {
+      "message": "{name} must be between {min} and {max} s, got {value} s"
+    },
+    "option_below_duration": {
+      "message": "{name} of {value} s is shorter than the Program duration of {limit} s"
+    },
+    "option_starts_program": {
+      "message": "{name} of {value} s would start the waiting Program right away, it must be more than {limit} s"
+    },
+    "program_started": {
+      "message": "The Program has started while changing {name}: {reason}. The Appliance is now in state {state}"
+    },
     "entity_not_found": {
       "message": "Appliance has no entity {key}"
     },
