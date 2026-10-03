@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.6+as3b.3
+
+### Fixed
+
+- The services `set_start_in` and `set_finish_in` did nothing: the coroutine writing the value was never
+  awaited, so the call returned without sending anything to the appliance. The value is now written to
+  `/ro/values` (option UID), which changes the option of the selected or active program, also while the
+  program waits for its delayed start. The local access check of the library is skipped for this, so the
+  appliance decides; if it refuses, the service fails with its error code
+  (e.g. "Error 532 (InvalidUIDValue) setting BSH.Common.Option.FinishInRelative").
+- `start_program` and the start button no longer send options the appliance reports as not available
+  (e.g. `Load.Half`) or options without a known value. Some appliances answered those with an error
+  (e.g. 501 for `/ro/activeProgram`) although the program started.
+
+### Changed
+
+- `start_in` and `finish_in` of the services are rounded to the step size of the option (e.g. 60 s).
+- Error messages of `start_program` include the text of the error code and the program name.
+
 ## 1.0.6+as3b.2
 
 ### Fixed
