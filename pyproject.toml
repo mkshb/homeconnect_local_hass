@@ -1,5 +1,5 @@
 [project]
-version = "1.0.6+as3b.4"
+version = "1.0.6+as3b.5"
 name = "homeconnect_ws"
 authors = [{ name = "chris-mc1" }]
 description = "Home Connect Local for Homeassistant"

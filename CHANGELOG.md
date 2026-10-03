@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.6+as3b.5
+
+Replaces the approach of 1.0.6+as3b.4: the service `send_raw` and the alternative ways of writing the option
+(`/ro/activeProgram`, `/ro/selectedProgram`) are removed again, as is the field `allow_pause`.
+
+### Changed
+
+- `set_finish_in` and `set_start_in` can change the time while the program waits for its delayed start.
+  Washers refuse writing the option then (519 "WriteRequest NoAccess"), like the app and the control panel.
+  The services now do what works there:
+  1. Pause the program (`BSH.Common.Command.PauseProgram`), fails with a clear message if the appliance
+     doesn't allow pausing at the moment. Wait for the operation state `Pause`.
+  2. Write the option to `/ro/values` and wait until the appliance confirms the new value.
+  3. Always resume (`BSH.Common.Command.ResumeProgram`) once the appliance is paused, also if a step failed.
+     Wait for `DelayedStart`; if the appliance stays paused, resume is sent once more.
+
+  The call only succeeds if the appliance waits for its delayed start again with the new value. Otherwise it
+  fails with the step, the reason and the current operation state and value. Each wait times out after 30 s.
+  The program is never aborted or restarted.
+- New field `pause_resume` (default on). Turned off, the value is written directly also during a delayed start.
+- Outside a delayed start the value is written directly as before.
+- Calls on the same appliance run one after another.
+- Both services can return `{"finish_in" or "start_in": <s>, "operation_state": "...", "paused": true|false}`.
+
 ## 1.0.6+as3b.4
 
 ### Changed
