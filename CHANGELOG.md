@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.0.6+as3b.4
+
+### Changed
+
+- `set_finish_in` and `set_start_in` try several ways to write the value, each only if the appliance refused
+  the previous one (e.g. washers answer 519 "WriteRequest NoAccess" to `/ro/values` during a delayed start):
+  1. `/ro/values` with the option UID
+  2. `/ro/activeProgram` with the active program and only this option
+  3. `/ro/activeProgram` with the active program, its available options and the new value
+  4. `/ro/selectedProgram` with the selected program and only this option
+  5. Only with the new field `allow_pause`, and only if the appliance allows pausing at that moment:
+     pause, write to `/ro/values`, resume
+
+  Program and option UIDs come from the appliance description. The variant that worked is logged at info
+  level. If the appliance rejects the value itself (e.g. 531 ValueOutOfRange) or all variants fail, its
+  last error is raised unchanged.
+- Service handlers moved to `services.py`.
+
+### Added
+
+- Service `send_raw` (admins only, diagnostics): sends a message with `resource`, `action` (GET, POST,
+  NOTIFY; default POST) and `data` unchanged to the appliance and returns its response, error codes included.
+- Service `describe_option` (diagnostics): returns the current state of an option or other entity by key or
+  UID (access, available, min, max, step, value) including all description changes received so far, plus
+  the active and selected program.
+- Debug logging of value and description changes (`/ro/values`, `/ro/descriptionChange`) with entity names,
+  enabled with the log level debug for `custom_components.homeconnect_ws`.
+
 ## 1.0.6+as3b.3
 
 ### Fixed
