@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.0.6+as3b.6
+
+### Fixed
+
+- `set_finish_in` with a finish time shorter than the program duration during a delayed start started the
+  program. The washer corrected the value to the program duration ("start now") 0.7 s after it was written,
+  the first resume was sent during that correction and had no effect, the second one started the program.
+  - Values are checked before pausing: below `min`/above `max` of the option, a finish time shorter than the
+    program duration (`EstimatedTotalProgramTime`, else `RemainingProgramTime`) and, during a delayed start, a
+    finish time equal to the program duration or a start delay of 0 (both start the program right away) are
+    refused without pausing.
+  - After writing, the value has to stay unchanged for 1.5 s before resuming. If the appliance changed it by
+    more than the step size, the old value is written back before resuming and the call fails.
+  - Resume is only sent (and sent again) if it doesn't start the program right away. Otherwise the program
+    stays paused and the call fails with a hint to resume manually or set a later time.
+  - A program that started (`run`) is reported as error.
+- A value equal to the current one (within the step size) no longer pauses the program.
+
+### Changed
+
+- Timeouts during a delayed start: pause 5 s, value reported 5 s, settled 1.5 s (at most 4 s), resume command
+  available 2 s, leaving the pause 8 s, resume sent at most twice. A change normally takes about 5 s and at
+  most 43 s, restoring the old value included.
+
 ## 1.0.6+as3b.5
 
 Replaces the approach of 1.0.6+as3b.4: the service `send_raw` and the alternative ways of writing the option

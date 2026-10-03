@@ -1084,7 +1084,7 @@ wheels = [
 
 [[package]]
 name = "homeconnect-ws"
-version = "1.0.6+as3b.5"
+version = "1.0.6+as3b.6"
 source = { virtual = "." }
 dependencies = [
     { name = "homeconnect-websocket" },
