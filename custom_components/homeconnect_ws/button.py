@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from homeassistant.components.button import ButtonEntity
 
 from .entity import HCEntity
-from .helpers import create_entities, error_decorator
+from .helpers import create_entities, error_decorator, start_program
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -56,4 +56,4 @@ class HCStartButton(HCEntity, ButtonEntity):
 
     @error_decorator
     async def async_press(self) -> None:
-        await self._runtime_data.appliance.selected_program.start()
+        await start_program(self._runtime_data.appliance.selected_program)

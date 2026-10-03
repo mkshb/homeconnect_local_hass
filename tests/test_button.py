@@ -45,6 +45,9 @@ async def test_start(
     entity_id = "button.fake_brand_homeappliance_activeprogram"
     assert await setup_config_entry(hass, CONFIG_ENTRIES[0])
     await mock_appliance.entities["Test.SelectedProgram"].update({"value": 500})
+    await mock_appliance.entities["Test.Option1"].update({"value": 1})
+    # Options not available at the moment must not be sent
+    await mock_appliance.entities["Test.Option2"].update({"value": 2, "available": False})
     await hass.async_block_till_done()
 
     await hass.services.async_call(
@@ -60,7 +63,7 @@ async def test_start(
             action=Action.POST,
             data={
                 "program": 500,
-                "options": [{"uid": 401, "value": None}, {"uid": 402, "value": None}],
+                "options": [{"uid": 401, "value": 1}],
             },
         )
     )

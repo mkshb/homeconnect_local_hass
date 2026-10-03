@@ -3654,7 +3654,10 @@
       "message": "'Finish in' is not available on this Appliance"
     },
     "start_program_error": {
-      "message": "Error {code} starting program, resource {resource}"
+      "message": "Error {code} ({message}) starting program {name}, resource {resource}"
+    },
+    "set_option_error": {
+      "message": "Error {code} ({message}) setting {name}, resource {resource}"
     },
     "no_program_selected": {
       "message": "No Program selected"

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Never
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_DESCRIPTION
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
     DeviceInfo,
@@ -38,7 +38,7 @@ from .const import (
 )
 from .coordinator import HomeConnectCoordinator
 from .entity_descriptions import get_available_entities
-from .helpers import error_decorator, get_config_entry_from_call
+from .helpers import error_decorator, get_config_entry_from_call, start_program
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse
@@ -99,25 +99,37 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             )
         return entity
 
-    def _duration_to_seconds(data: dict) -> int:
-        return (
+    def _duration_to_seconds(entity: Entity, data: dict) -> int:
+        seconds = (
             int(data.get("hours", 0)) * 3600
             + int(data.get("minutes", 0)) * 60
             + int(data.get("seconds", 0))
         )
+        # The appliance only accepts multiples of the step size (e.g. 60 s)
+        if step := getattr(entity, "step", None):
+            seconds = round(seconds / step) * int(step)
+        return seconds
 
-    def _raise_start_error(err: CodeResponsError) -> Never:
-        raise ServiceValidationError(
+    def _raise_code_error(err: CodeResponsError, translation_key: str, name: str) -> Never:
+        raise HomeAssistantError(
             translation_domain=DOMAIN,
-            translation_key="start_program_error",
-            translation_placeholders={"code": err.code, "resource": err.resource},
+            translation_key=translation_key,
+            translation_placeholders={
+                "code": str(err.code),
+                "message": err.message,
+                "resource": err.resource,
+                "name": name,
+            },
         ) from None
 
-    async def _set_value_or_raise(entity: Entity, relative_time_in_seconds: int) -> None:
+    async def _set_option_or_raise(entity: Entity, value: int) -> None:
+        # Writes the option of the selected or active program via /ro/values. This also works
+        # while the program waits for its delayed start. The local access/available check of
+        # the library is skipped, the appliance decides and reports an error code if it refuses.
         try:
-            await entity.set_value(relative_time_in_seconds)
+            await Entity.set_value_raw(entity, value)
         except CodeResponsError as exc:
-            _raise_start_error(exc)
+            _raise_code_error(exc, "set_option_error", entity.name)
 
     @error_decorator
     async def handle_start_program(call: ServiceCall) -> ServiceResponse:
@@ -129,19 +141,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             entity = _get_entity_or_raise(
                 appliance, "BSH.Common.Option.StartInRelative", "start_in_not_available"
             )
-            options[entity.uid] = _duration_to_seconds(call.data["start_in"])
+            options[entity.uid] = _duration_to_seconds(entity, call.data["start_in"])
 
         if "finish_in" in call.data:
             entity = _get_entity_or_raise(
                 appliance, "BSH.Common.Option.FinishInRelative", "finish_in_not_available"
             )
-            options[entity.uid] = _duration_to_seconds(call.data["finish_in"])
+            options[entity.uid] = _duration_to_seconds(entity, call.data["finish_in"])
 
         if appliance.selected_program:
             try:
-                await appliance.selected_program.start(options)
+                await start_program(appliance.selected_program, options)
             except CodeResponsError as exc:
-                _raise_start_error(exc)
+                _raise_code_error(exc, "start_program_error", appliance.selected_program.name)
         else:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
@@ -152,23 +164,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     async def handle_set_start_in(call: ServiceCall) -> ServiceResponse:
         config_entry = await get_config_entry_from_call(hass, call)
         appliance = config_entry.runtime_data.appliance
-        _set_value_or_raise(
-            _get_entity_or_raise(
-                appliance, "BSH.Common.Option.StartInRelative", "start_in_not_available"
-            ),
-            _duration_to_seconds(call.data["start_in"]),
+        entity = _get_entity_or_raise(
+            appliance, "BSH.Common.Option.StartInRelative", "start_in_not_available"
         )
+        await _set_option_or_raise(entity, _duration_to_seconds(entity, call.data["start_in"]))
 
     @error_decorator
     async def handle_set_finish_in(call: ServiceCall) -> ServiceResponse:
         config_entry = await get_config_entry_from_call(hass, call)
         appliance = config_entry.runtime_data.appliance
-        _set_value_or_raise(
-            _get_entity_or_raise(
-                appliance, "BSH.Common.Option.FinishInRelative", "finish_in_not_available"
-            ),
-            _duration_to_seconds(call.data["finish_in"]),
+        entity = _get_entity_or_raise(
+            appliance, "BSH.Common.Option.FinishInRelative", "finish_in_not_available"
         )
+        await _set_option_or_raise(entity, _duration_to_seconds(entity, call.data["finish_in"]))
 
     hass.services.async_register(DOMAIN, "start_program", handle_start_program)
     hass.services.async_register(DOMAIN, "set_start_in", handle_set_start_in)
