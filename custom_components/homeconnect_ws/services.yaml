@@ -25,6 +25,11 @@ set_start_in:
       required: true
       selector:
         duration:
+    allow_pause:
+      required: false
+      default: false
+      selector:
+        boolean:
 
 set_finish_in:
   fields:
@@ -37,3 +42,48 @@ set_finish_in:
       required: true
       selector:
         duration:
+    allow_pause:
+      required: false
+      default: false
+      selector:
+        boolean:
+
+send_raw:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: homeconnect_ws
+    resource:
+      required: true
+      example: /ro/activeProgram
+      selector:
+        text:
+    action:
+      required: false
+      default: POST
+      selector:
+        select:
+          options:
+            - GET
+            - POST
+            - NOTIFY
+    data:
+      required: false
+      example: '[{"program": 8193, "options": [{"uid": 558, "value": 10800}]}]'
+      selector:
+        object:
+
+describe_option:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: homeconnect_ws
+    key:
+      required: true
+      example: BSH.Common.Option.FinishInRelative
+      selector:
+        text:

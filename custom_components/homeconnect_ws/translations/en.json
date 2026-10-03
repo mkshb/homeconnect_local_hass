@@ -3639,9 +3639,63 @@
           "name": "Delay",
           "description": "Set the start delay"
         },
+        "allow_pause": {
+          "name": "Allow pausing",
+          "description": "If the Appliance refuses all other ways, pause the Program, change the value and resume it. Only used if the Appliance allows pausing at the moment"
+        }
+      }
+    },
+    "set_finish_in": {
+      "name": "Set finish time",
+      "description": "Set the time the Program should be finished in, also while it waits for its delayed start",
+      "fields": {
+        "device_id": {
+          "name": "Appliance",
+          "description": "The Appliance to set the finish time on"
+        },
         "finish_in": {
           "name": "Finish in",
           "description": "Set the time the Program should be finished in"
+        },
+        "allow_pause": {
+          "name": "Allow pausing",
+          "description": "If the Appliance refuses all other ways, pause the Program, change the value and resume it. Only used if the Appliance allows pausing at the moment"
+        }
+      }
+    },
+    "send_raw": {
+      "name": "Send raw message",
+      "description": "Diagnostics: send a message to the Appliance and return its response, including error codes",
+      "fields": {
+        "device_id": {
+          "name": "Appliance",
+          "description": "The Appliance to send the message to"
+        },
+        "resource": {
+          "name": "Resource",
+          "description": "Resource of the message, e.g. /ro/activeProgram"
+        },
+        "action": {
+          "name": "Action",
+          "description": "Action of the message"
+        },
+        "data": {
+          "name": "Data",
+          "description": "Data of the message, sent unchanged (an object is wrapped in a list)"
+        }
+      }
+    },
+    "describe_option": {
+      "name": "Describe entity",
+      "description": "Diagnostics: return the current description of an option or other entity (access, available, min, max, step, value)",
+      "fields": {
+        "device_id": {
+          "name": "Appliance",
+          "description": "The Appliance of the entity"
+        },
+        "key": {
+          "name": "Key or UID",
+          "description": "Key (e.g. BSH.Common.Option.FinishInRelative) or UID of the entity"
         }
       }
     }
@@ -3655,6 +3709,9 @@
     },
     "start_program_error": {
       "message": "Error {code} ({message}) starting program {name}, resource {resource}"
+    },
+    "entity_not_found": {
+      "message": "Appliance has no entity {key}"
     },
     "set_option_error": {
       "message": "Error {code} ({message}) setting {name}, resource {resource}"

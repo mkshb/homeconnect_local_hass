@@ -109,15 +109,15 @@ def entity_is_available(entity: HcEntity, available_access: tuple[Access]) -> bo
     return available
 
 
-async def start_program(program: Program, options: dict[int, Any] | None = None) -> None:
+def start_options(program: Program, options: dict[int, Any] | None = None) -> dict[int, Any]:
     """
-    Start a program with the given options and the currently available writable options.
+    Get the given options plus the currently available writable options of the program.
 
     The library sends every writable option of the program, including options the appliance
     marked as not available (e.g. Load.Half). Some appliances answer that with an error although
     the program starts, so leave out options that are known to be unavailable.
     """
-    start_options = {
+    _options = {
         option.uid: option.value_shadow
         for option in program._options  # noqa: SLF001
         if option.access == Access.READ_WRITE
@@ -125,8 +125,13 @@ async def start_program(program: Program, options: dict[int, Any] | None = None)
         and option.value_shadow is not None
     }
     if options:
-        start_options.update(options)
-    await program.start(start_options, override_options=True)
+        _options.update(options)
+    return _options
+
+
+async def start_program(program: Program, options: dict[int, Any] | None = None) -> None:
+    """Start a program with the given options and the currently available writable options."""
+    await program.start(start_options(program, options), override_options=True)
 
 
 def error_decorator[T](func: Callable[..., Coroutine[T]]) -> Callable[..., Coroutine[T]]:

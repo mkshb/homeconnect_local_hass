@@ -20,6 +20,7 @@ from homeconnect_websocket import (
     HomeAppliance,
 )
 from homeconnect_websocket.errors import HCConnectionError
+from homeconnect_websocket.message import Action
 
 from .const import (
     CLOSE_TIMEOUT,
@@ -35,6 +36,7 @@ from .const import (
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
+    from homeconnect_websocket.message import Message
 
     from . import HCConfigEntry
 
@@ -119,6 +121,7 @@ class HomeConnectCoordinator(DataUpdateCoordinator):
             connection_callback=self._connection_state_callback,
         )
         self._wrap_library_recv_loop()
+        self._wrap_message_handler()
         self.disconnect_time = time.time()
         if not self.appliance.info:
             self._client_session.detach()
@@ -144,6 +147,31 @@ class HomeConnectCoordinator(DataUpdateCoordinator):
                 self.logger.debug("Receive loop for %s ended: %s", self._host, _describe_error(exc))
 
         session._wrap_recv_loop = wrap_recv_loop  # noqa: SLF001
+
+    def _wrap_message_handler(self) -> None:
+        """Log value and description changes of the appliance at debug level, with entity names."""
+        session = self.appliance.session
+        message_handler = session._ext_message_handler  # noqa: SLF001
+
+        async def wrap_message_handler(message: Message) -> None:
+            if (
+                message.action == Action.NOTIFY
+                and message.resource in ("/ro/values", "/ro/descriptionChange")
+                and message.data
+                and self.logger.isEnabledFor(logging.DEBUG)
+            ):
+                for item in message.data:
+                    entity = self.appliance.entities_uid.get(int(item.get("uid", 0)))
+                    self.logger.debug(
+                        "%s %s %s: %s",
+                        self._host,
+                        message.resource,
+                        entity.name if entity else item.get("uid"),
+                        {key: value for key, value in item.items() if key != "uid"},
+                    )
+            await message_handler(message)
+
+        session._ext_message_handler = wrap_message_handler  # noqa: SLF001
 
     async def close(self) -> None:
         """Stop connecting and close the connection, safe to call multiple times."""
